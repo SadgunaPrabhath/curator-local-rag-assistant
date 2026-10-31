@@ -1,0 +1,10 @@
+# Never commit secrets or environment stuff
+.env
+venv/
+__pycache__/
+*.pyc
+
+# Vector DB data (created in later stages)
+chroma_db/
+
+.streamlit/secrets.toml
