@@ -1,5 +1,5 @@
 """
-Stage 1 — Hello Local AI (Ollama)
+Hello Local AI (Ollama)
 ---------------------------------
 Goal: prove your setup works. Send ONE question to a local AI model and print
 the answer. Runs 100% on your machine — no API key, no cost, no internet.
@@ -7,7 +7,7 @@ the answer. Runs 100% on your machine — no API key, no cost, no internet.
 Before running:
   1. Install Ollama from https://ollama.com/download
   2. In a terminal, download a model:  ollama pull llama3.2
-  3. Then run this:  python stage1_hello_claude.py
+  3. Then run this:  python examples/hello_ollama.py
 """
 
 import ollama

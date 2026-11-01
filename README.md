@@ -1,5 +1,7 @@
 # Curator — Local RAG Document Assistant
 
+[![tests](https://github.com/SadgunaPrabhath/curator-local-rag-assistant/actions/workflows/tests.yml/badge.svg)](https://github.com/SadgunaPrabhath/curator-local-rag-assistant/actions/workflows/tests.yml)
+
 Curator is a local-first app for exploring PDF documents. Add your files, ask questions across one or more sources, and review answers alongside the passages and page references they came from.
 
 The app uses retrieval-augmented generation (RAG): it extracts and indexes document text, retrieves relevant passages for each question, and sends that context to a locally running language model. Curator does not require a cloud API key.
@@ -99,6 +101,46 @@ Open the local address printed by Streamlit, usually <http://localhost:8501>. Ke
 
 Each PDF is limited to the first 60 pages during ingestion. Curator extracts embedded PDF text; scanned pages without a text layer need OCR before they can be searched.
 
+## Configuration
+
+The defaults work out of the box. To change them, set environment variables before starting the app (the models can be swapped without editing code):
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `CURATOR_MODEL` | `llama3.2` | Ollama model used to write answers (run `ollama pull <name>` first) |
+| `CURATOR_EMBED_MODEL` | `all-MiniLM-L6-v2` | sentence-transformers embedding model |
+| `CURATOR_RERANK_MODEL` | `cross-encoder/ms-marco-MiniLM-L-6-v2` | cross-encoder used to rerank retrieved passages |
+| `CURATOR_MAX_PAGES` | `60` | Pages read from each PDF during ingestion |
+| `CURATOR_DB_DIR` | `./chroma_db` | Where the vector index is stored |
+
+```bash
+CURATOR_MODEL=llama3.1:8b python -m streamlit run app.py
+```
+
+On Windows PowerShell, set the variable first with `$env:CURATOR_MODEL = "llama3.1:8b"`. If you change the embedding model, delete the old index folder, because vectors from different models cannot be mixed.
+
+## Evaluate retrieval quality
+
+Answer quality depends on retrieving the right passage, so Curator includes a small script that measures it. Put some PDFs in a folder and write a `gold.jsonl` file with one question per line, naming the PDF and page that contains the answer:
+
+```json
+{"question": "What was the 2023 revenue?", "source": "report.pdf", "page": 12}
+```
+
+```bash
+python evaluate.py --pdfs ./my_pdfs --gold gold.jsonl --k 5
+```
+
+It indexes the PDFs into a temporary database, runs the same retrieval and reranking code the app uses (no Ollama needed), and prints **hit@1**, **hit@k** and **MRR**, plus the questions it missed. Use it to compare chunk sizes, embedding models or rerankers with numbers instead of impressions. Twenty to thirty questions about your own documents give figures worth reporting.
+
+## Limitations
+
+- PDF only, and only the text layer: scanned pages need OCR first.
+- Only the first 60 pages of each PDF are read by default (see `CURATOR_MAX_PAGES`).
+- Answer quality is bounded by the local model. A small model such as `llama3.2` can still miss details or phrase things loosely, so check the cited pages for anything important.
+- The default context window is deliberately small (2048 tokens) to keep generation fast on CPU, so only a few passages are used per answer.
+- Retrieval quality has not been published for a benchmark dataset. Run `evaluate.py` on your own documents to measure it.
+
 ## Local data
 
 The ChromaDB index is stored in `chroma_db/` relative to the directory where the app is launched. That folder is ignored by Git because it contains the user's indexed documents and should not be committed. Removing a source in the app deletes its indexed content; deleting `chroma_db/` resets the full local index.
@@ -108,16 +150,19 @@ Curator sends prompts to the Ollama service configured on the same machine and r
 ## Project files
 
 ```text
-app.py             Streamlit interface and session workflow
-rag_engine.py      PDF ingestion, retrieval, citations, and generation
-requirements.txt   Python dependencies
-tests/             Offline tests for the RAG engine's pure logic
+app.py                  Streamlit interface and session workflow
+rag_engine.py           PDF ingestion, retrieval, citations, and generation
+evaluate.py             Retrieval evaluation (hit@k, MRR) on your own PDFs
+requirements.txt        Python dependencies
+tests/                  Offline tests for parsing, chunking, indexing and retrieval
+examples/hello_ollama.py  Minimal script to check that Ollama works
+.github/workflows/      Continuous integration that runs the tests
 ```
 
 ## Run the offline tests
 
-```powershell
+```bash
 python -m pytest -q
 ```
 
-The tests cover parsing, chunking, numeric grounding, confidence scoring, and mocked answer orchestration. They do not require Ollama or downloading the language models.
+The tests cover parsing, chunking, numeric grounding, confidence scoring, mocked answer orchestration, and the full ingest, index, filter, delete and retrieve path against a temporary ChromaDB. They use a small deterministic stand-in for the embedding model, so they do not require Ollama or downloading any models, and they run on every push through GitHub Actions.
