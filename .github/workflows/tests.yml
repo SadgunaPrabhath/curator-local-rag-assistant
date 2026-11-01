@@ -1,0 +1,25 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      # The tests never load the neural models or call Ollama, so only the
+      # light dependencies are needed (no torch / sentence-transformers).
+      - name: Install test dependencies
+        run: python -m pip install pytest chromadb pypdf ollama
+      - name: Run tests
+        run: python -m pytest -q

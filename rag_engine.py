@@ -20,18 +20,33 @@ import hashlib
 import io
 import json
 import math
+import os
 import re
+from typing import TYPE_CHECKING
 
 import chromadb
 import ollama
 from pypdf import PdfReader
-from sentence_transformers import CrossEncoder, SentenceTransformer
+
+if TYPE_CHECKING:  # heavy imports happen lazily, see get_embedder / get_reranker
+    from sentence_transformers import CrossEncoder, SentenceTransformer
+
+
+def _env_int(name: str, default: int) -> int:
+    """Read a positive integer setting from the environment, else the default."""
+    try:
+        value = int(os.environ.get(name, ""))
+        return value if value > 0 else default
+    except ValueError:
+        return default
 
 
 # --- Models ---------------------------------------------------------------
-OLLAMA_MODEL = "llama3.2"
-EMBED_MODEL = "all-MiniLM-L6-v2"
-RERANK_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+# Override any of these without editing code, e.g. CURATOR_MODEL=llama3.1:8b
+OLLAMA_MODEL = os.environ.get("CURATOR_MODEL", "llama3.2")
+EMBED_MODEL = os.environ.get("CURATOR_EMBED_MODEL", "all-MiniLM-L6-v2")
+RERANK_MODEL = os.environ.get("CURATOR_RERANK_MODEL",
+                              "cross-encoder/ms-marco-MiniLM-L-6-v2")
 
 # Keep the LLM resident between questions (Ollama unloads after 5 min idle).
 KEEP_ALIVE = "30m"
@@ -42,14 +57,14 @@ NUM_CTX = 2048
 NUM_CTX_STUDIO = 8192
 
 # --- Ingestion knobs ------------------------------------------------------
-MAX_PAGES = 60
+MAX_PAGES = _env_int("CURATOR_MAX_PAGES", 60)
 CHUNK_WORDS = 200          # target chunk size, in words
 OVERLAP_SENTENCES = 1      # sentences shared between neighbouring chunks
 
 # --- Persistent vector store ---------------------------------------------
 # Docs persist across app restarts (and multiple PDFs live side by side). The
 # folder is gitignored. Delete it to wipe everything.
-CHROMA_DIR = "./chroma_db"
+CHROMA_DIR = os.environ.get("CURATOR_DB_DIR", "./chroma_db")
 COLLECTION = "documents"
 
 NOT_FOUND = "I couldn't find that in the document."
@@ -63,23 +78,27 @@ class RagError(Exception):
 # ===========================================================================
 # 1. LOCAL MODELS (loaded once, reused)
 # ===========================================================================
-_EMBEDDER: SentenceTransformer | None = None
-_RERANKER: CrossEncoder | None = None
+_EMBEDDER: "SentenceTransformer | None" = None
+_RERANKER: "CrossEncoder | None" = None
 
 
-def get_embedder() -> SentenceTransformer:
+def get_embedder() -> "SentenceTransformer":
+    # Imported here, not at module level: importing torch/sentence-transformers
+    # takes seconds and is not needed for parsing, chunking or the unit tests.
     global _EMBEDDER
     if _EMBEDDER is None:
+        from sentence_transformers import SentenceTransformer
         _EMBEDDER = SentenceTransformer(EMBED_MODEL)
     return _EMBEDDER
 
 
-def get_reranker() -> CrossEncoder | None:
+def get_reranker() -> "CrossEncoder | None":
     """Cross-encoder that re-scores candidate chunks against the query.
     Returns None if it can't load, so retrieval still works without it."""
     global _RERANKER
     if _RERANKER is None:
         try:
+            from sentence_transformers import CrossEncoder
             _RERANKER = CrossEncoder(RERANK_MODEL)
         except Exception:
             return None
@@ -138,6 +157,19 @@ def extract_pages_from_pdf(pdf_source, max_pages: int = MAX_PAGES):
             f"encrypted, or not a real PDF. ({type(e).__name__})"
         ) from e
     return pages, total_pages
+
+
+def count_pdf_pages(pdf_source) -> int:
+    """Page count only (cheap; does not extract any text)."""
+    if isinstance(pdf_source, (bytes, bytearray)):
+        pdf_source = io.BytesIO(pdf_source)
+    try:
+        return len(PdfReader(pdf_source).pages)
+    except Exception as e:
+        raise RagError(
+            "This file couldn't be read as a PDF. It may be corrupted, "
+            f"encrypted, or not a real PDF. ({type(e).__name__})"
+        ) from e
 
 
 _SENTENCE_RE = re.compile(r"(?<=[.!?])\s+")
@@ -261,16 +293,20 @@ class RagEngine:
                    progress_callback=None) -> dict:
         """Index one PDF. Skips work if this exact file is already indexed."""
         doc = self.doc_id(file_bytes)
-        pages, total_pages = extract_pages_from_pdf(file_bytes)
-        pages_read = len(pages)
 
+        # Already indexed? Answer from the index without re-extracting any text.
         if self.has_document(doc):
-            existing = sum(1 for m in (self._collection.get(where={"doc": doc},
-                           include=["metadatas"]).get("metadatas") or []))
+            total_pages = count_pdf_pages(file_bytes)
+            pages_read = min(total_pages, MAX_PAGES)
+            existing = len(self._collection.get(where={"doc": doc},
+                                                include=["metadatas"])
+                           .get("metadatas") or [])
             return {"doc": doc, "chunks": existing, "pages_read": pages_read,
                     "total_pages": total_pages,
                     "truncated": pages_read < total_pages, "cached": True}
 
+        pages, total_pages = extract_pages_from_pdf(file_bytes)
+        pages_read = len(pages)
         chunks = chunk_pages(pages)
         if not chunks:
             raise RagError(

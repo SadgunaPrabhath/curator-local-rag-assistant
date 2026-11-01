@@ -4,7 +4,7 @@ venv/
 __pycache__/
 *.pyc
 
-# Vector DB data (created in later stages)
+# Local vector database (user documents; never commit)
 chroma_db/
 
 .streamlit/secrets.toml
